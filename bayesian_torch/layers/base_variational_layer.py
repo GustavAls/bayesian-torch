@@ -32,10 +32,12 @@ import torch.distributions as distributions
 from itertools import repeat
 import collections
 
+
 def get_kernel_size(x, n):
-        if isinstance(x, collections.abc.Iterable):
-            return tuple(x)
-        return tuple(repeat(x, n))
+    if isinstance(x, collections.abc.Iterable):
+        return tuple(x)
+    return tuple(repeat(x, n))
+
 
 class BaseVariationalLayer_(nn.Module):
     def __init__(self):
@@ -50,7 +52,7 @@ class BaseVariationalLayer_(nn.Module):
     def dnn_to_bnn_flag(self, value):
         self._dnn_to_bnn_flag = value
 
-    def kl_div(self, mu_q, sigma_q, mu_p, sigma_p):
+    def kl_div(self, mu_q, sigma_q, mu_p, sigma_p, mask=None):
         """
         Calculates kl divergence between two gaussians (Q || P)
 
@@ -62,7 +64,10 @@ class BaseVariationalLayer_(nn.Module):
 
         returns torch.Tensor of shape 0
         """
+
         kl = torch.log(sigma_p) - torch.log(
-            sigma_q) + (sigma_q**2 + (mu_q - mu_p)**2) / (2 *
-                                                          (sigma_p**2)) - 0.5
+            sigma_q) + (sigma_q ** 2 + (mu_q - mu_p) ** 2) / (2 *
+                                                              (sigma_p ** 2)) - 0.5
+        if mask is not None:
+            kl *= mask
         return kl.mean()

@@ -59,7 +59,8 @@ class LinearReparameterization(BaseVariationalLayer_):
                  prior_variance=1,
                  posterior_mu_init=0,
                  posterior_rho_init=-3.0,
-                 bias=True):
+                 bias=True,
+                 mask=None):
         """
         Implements Linear layer with reparameterization trick.
 
@@ -87,6 +88,11 @@ class LinearReparameterization(BaseVariationalLayer_):
 
         self.mu_weight = Parameter(torch.Tensor(out_features, in_features))
         self.rho_weight = Parameter(torch.Tensor(out_features, in_features))
+        if mask is None:
+            self.mu_and_rho_weight_mask = torch.ones_like(self.mu_weight)
+        else:
+            self.mu_and_rho_weight_mask = mask[0]
+
         self.register_buffer('eps_weight',
                              torch.Tensor(out_features, in_features),
                              persistent=False)
@@ -99,6 +105,14 @@ class LinearReparameterization(BaseVariationalLayer_):
         if bias:
             self.mu_bias = Parameter(torch.Tensor(out_features))
             self.rho_bias = Parameter(torch.Tensor(out_features))
+            if isinstance(mask, tuple) and len(mask) == 2:
+                if mask[1] is None:
+                    self.mu_and_rho_bias_mask = torch.ones_like(self.mu_bias)
+                else:
+                    self.mu_and_rho_bias_mask = mask[1]
+            else:
+                self.mu_and_rho_bias_mask = mask[1]
+
             self.register_buffer(
                 'eps_bias',
                 torch.Tensor(out_features),
@@ -118,15 +132,18 @@ class LinearReparameterization(BaseVariationalLayer_):
             self.register_buffer('eps_bias', None, persistent=False)
 
         self.init_parameters()
-        self.quant_prepare=False
-    
+        self.quant_prepare = False
+
     def prepare(self):
         self.qint_quant = nn.ModuleList([torch.quantization.QuantStub(
-                                         QConfig(weight=MinMaxObserver.with_args(dtype=torch.qint8, qscheme=torch.per_tensor_symmetric), activation=MinMaxObserver.with_args(dtype=torch.qint8,qscheme=torch.per_tensor_symmetric))) for _ in range(5)])
+            QConfig(weight=MinMaxObserver.with_args(dtype=torch.qint8, qscheme=torch.per_tensor_symmetric),
+                    activation=MinMaxObserver.with_args(dtype=torch.qint8, qscheme=torch.per_tensor_symmetric))) for _
+            in range(5)])
         self.quint_quant = nn.ModuleList([torch.quantization.QuantStub(
-                                         QConfig(weight=MinMaxObserver.with_args(dtype=torch.quint8), activation=MinMaxObserver.with_args(dtype=torch.quint8))) for _ in range(2)])
+            QConfig(weight=MinMaxObserver.with_args(dtype=torch.quint8),
+                    activation=MinMaxObserver.with_args(dtype=torch.quint8))) for _ in range(2)])
         self.dequant = torch.quantization.DeQuantStub()
-        self.quant_prepare=True
+        self.quant_prepare = True
 
     def init_parameters(self):
         self.prior_weight_mu.fill_(self.prior_mean)
@@ -147,11 +164,13 @@ class LinearReparameterization(BaseVariationalLayer_):
             self.mu_weight,
             sigma_weight,
             self.prior_weight_mu,
-            self.prior_weight_sigma)
+            self.prior_weight_sigma,
+            mask=self.mu_and_rho_weight_mask)
         if self.mu_bias is not None:
             sigma_bias = torch.log1p(torch.exp(self.rho_bias))
             kl += self.kl_div(self.mu_bias, sigma_bias,
-                              self.prior_bias_mu, self.prior_bias_sigma)
+                              self.prior_bias_mu,
+                              self.prior_bias_sigma, mask=self.mu_and_rho_bias_mask)
         return kl
 
     def forward(self, input, return_kl=True):
@@ -159,36 +178,41 @@ class LinearReparameterization(BaseVariationalLayer_):
             return_kl = False
         sigma_weight = torch.log1p(torch.exp(self.rho_weight))
         eps_weight = self.eps_weight.data.normal_()
-        tmp_result = sigma_weight * eps_weight
+        tmp_result = sigma_weight * eps_weight * self.mu_and_rho_weight_mask
         weight = self.mu_weight + tmp_result
 
-
         if return_kl:
-            kl_weight = self.kl_div(self.mu_weight, sigma_weight,
-                                    self.prior_weight_mu, self.prior_weight_sigma)
+            kl_weight = self.kl_div(self.mu_weight,
+                                    sigma_weight,
+                                    self.prior_weight_mu,
+                                    self.prior_weight_sigma,
+                                    mask=self.mu_and_rho_weight_mask)
+
         bias = None
 
         if self.mu_bias is not None:
             sigma_bias = torch.log1p(torch.exp(self.rho_bias))
             bias = self.mu_bias + (sigma_bias * self.eps_bias.data.normal_())
             if return_kl:
-                kl_bias = self.kl_div(self.mu_bias, sigma_bias, self.prior_bias_mu,
-                                      self.prior_bias_sigma)
+                kl_bias = self.kl_div(self.mu_bias,
+                                      sigma_bias,
+                                      self.prior_bias_mu,
+                                      self.prior_bias_sigma,
+                                      mask=self.mu_and_rho_bias_mask)
 
         out = F.linear(input, weight, bias)
 
         if self.quant_prepare:
             # quint8 quantstub
-            input = self.quint_quant[0](input) # input
-            out = self.quint_quant[1](out) # output
+            input = self.quint_quant[0](input)  # input
+            out = self.quint_quant[1](out)  # output
 
             # qint8 quantstub
-            sigma_weight = self.qint_quant[0](sigma_weight) # weight
-            mu_weight = self.qint_quant[1](self.mu_weight) # weight
-            eps_weight = self.qint_quant[2](eps_weight) # random variable
-            tmp_result =self.qint_quant[3](tmp_result) # multiply activation
-            weight = self.qint_quant[4](weight) # add activatation
-
+            sigma_weight = self.qint_quant[0](sigma_weight)  # weight
+            mu_weight = self.qint_quant[1](self.mu_weight)  # weight
+            eps_weight = self.qint_quant[2](eps_weight)  # random variable
+            tmp_result = self.qint_quant[3](tmp_result)  # multiply activation
+            weight = self.qint_quant[4](weight)  # add activatation
 
         if return_kl:
             if self.mu_bias is not None:

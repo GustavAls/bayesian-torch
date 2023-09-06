@@ -34,6 +34,8 @@
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
+
+import bayesian_torch.layers
 import bayesian_torch.layers as bayesian_layers
 from bayesian_torch.utils.util import get_rho
 
@@ -49,7 +51,7 @@ from bayesian_torch.utils.util import get_rho
 # }
 
 
-def bnn_linear_layer(params, d):
+def bnn_linear_layer(params, d, mask=None):
     layer_type = d.__class__.__name__ + params["type"]
     layer_fn = getattr(bayesian_layers, layer_type)  # Get BNN layer
     bnn_layer = layer_fn(
@@ -60,6 +62,7 @@ def bnn_linear_layer(params, d):
         posterior_mu_init=params["posterior_mu_init"],
         posterior_rho_init=params["posterior_rho_init"],
         bias=d.bias is not None,
+        mask=mask
     )
     # if MOPED is enabled initialize mu and sigma
     if params["moped_enable"]:
@@ -124,10 +127,13 @@ def bnn_lstm_layer(params, d):
 
 # replaces linear and conv layers
 # bnn_prior_parameters - check the template at the top.
-def dnn_to_bnn(m, bnn_prior_parameters):
+def dnn_to_bnn(m, bnn_prior_parameters, mask=None):
     for name, value in list(m._modules.items()):
+        if isinstance(m._modules[name], bayesian_torch.layers.LinearReparameterization):
+            continue
         if m._modules[name]._modules:
-            dnn_to_bnn(m._modules[name], bnn_prior_parameters)
+            dnn_to_bnn(m._modules[name], bnn_prior_parameters, mask.get(name, None))
+
         elif "Conv" in m._modules[name].__class__.__name__:
             setattr(
                 m,
@@ -141,7 +147,7 @@ def dnn_to_bnn(m, bnn_prior_parameters):
                 name,
                 bnn_linear_layer(
                     bnn_prior_parameters,
-                    m._modules[name]))
+                    m._modules[name], mask[name]))
         elif "LSTM" in m._modules[name].__class__.__name__:
             setattr(
                 m,
