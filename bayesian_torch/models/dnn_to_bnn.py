@@ -125,6 +125,23 @@ def bnn_lstm_layer(params, d):
     return bnn_layer
 
 
+def dnn_to_bnn_layer_wise(m, bnn_prior_parameters, mask = None, max_layers = 1):
+
+    counter = 0
+    for name, value in list(m._modules.items()):
+        if 'Linear' in m._modules[name].__class__.__name__:
+            setattr(
+                m,
+                name,
+                bnn_linear_layer(
+                    bnn_prior_parameters,
+                    m._modules[name], None))
+            counter += 1
+
+        if counter >= max_layers:
+            break
+    return
+
 # replaces linear and conv layers
 # bnn_prior_parameters - check the template at the top.
 def dnn_to_bnn(m, bnn_prior_parameters, mask=None):
